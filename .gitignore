@@ -1,3 +1,7 @@
+# Project-specific files and editor droppings
+*~
+config.toml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
