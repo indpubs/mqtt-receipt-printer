@@ -69,3 +69,135 @@ prefix = "barbarella"
 printer = "/dev/epson-tm-u220"
 status_check_interval = 5.0
 ```
+
+## Sample client
+
+This is a [quicktill](https://github.com/sde1000/quicktill) printer
+driver that implements this protocol:
+
+```
+import paho.mqtt.client as mqtt
+import io
+import ssl
+import time
+import json
+import uuid
+import base64
+
+
+class MQTTPrinter(quicktill.pdrivers.printer):
+    def __init__(self, driver, host, port, username, password, prefix):
+        super().__init__(driver, description=f"MQTT on {host}")
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.status_topic = f"{prefix}/status"
+        self.print_topic = f"{prefix}/print"
+        self.printed_topic = f"{prefix}/printed"
+
+    def _create_client(self):
+        client = mqtt.Client()
+        client.username_pw_set(self.username, self.password)
+        client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+        client.connect_async(self.host, self.port)
+        return client
+
+    def _run_client(self, client, end_time, done_fn):
+        try:
+            rc = client.reconnect()
+        except ConnectionRefusedError:
+            return
+
+        while not done_fn() and time.time() < end_time:
+            client.loop(timeout=end_time - time.time())
+
+        client.disconnect()
+
+    def offline(self):
+        start = time.time()
+        client = self._create_client()
+        status = None
+
+        def done():
+            return status is not None
+
+        def on_connect(client, userdata, flags, rc):
+            if rc == 0:
+                client.subscribe(self.status_topic, 0)
+
+        def on_status_message(client, userdata, msg):
+            nonlocal status
+            status = msg.payload
+
+        client.on_connect = on_connect
+        client.message_callback_add(
+            self.status_topic, on_status_message)
+
+        self._run_client(client, start + 2.0, done)
+
+        if status:
+            try:
+                sd = json.loads(status)
+            except json.JSONDecodeError:
+                sd = {"status": "Invalid status", "ok": False}
+            if not sd["ok"]:
+                return sd["status"]
+            return
+        return "No response from MQTT broker within time limit"
+
+    def _send_job(self, data):
+        # Raise quicktill.pdrivers.PrinterError(self, msg) if print fails
+        jobid = str(uuid.uuid4())
+        start = time.time()
+        client = self._create_client()
+        finished = False
+        status = None
+
+        def done():
+            return finished
+
+        def on_connect(client, userdata, flags, rc):
+            if rc == 0:
+                client.subscribe(self.printed_topic, 0)
+
+        def on_subscribe(client, userdata, mid, granted_qos):
+            client.publish(self.print_topic, json.dumps({
+                "jobid": jobid,
+                "data": base64.b64encode(data).decode('ascii'),
+            }))
+
+        def on_printed_message(client, userdata, msg):
+            nonlocal finished, status
+            _s = json.loads(msg.payload)
+            if _s['jobid'] == jobid:
+                status = _s
+                if status['finished']:
+                    finished = True
+
+        client.on_connect = on_connect
+        client.on_subscribe = on_subscribe
+        client.message_callback_add(
+            self.printed_topic, on_printed_message)
+
+        self._run_client(client, start + 10.0, done)
+
+        if not finished:
+            raise quicktill.pdrivers.PrinterError(
+                self, "No response to print job: we don't know whether "
+                "it printed or not.")
+
+        if not status['success']:
+            raise quicktill.pdrivers.PrinterError(
+                self, status['status'])
+
+    def print_canvas(self, canvas):
+        with io.BytesIO() as f:
+            self._driver.process_canvas(canvas, f)
+            self._send_job(f.getvalue())
+
+    def kickout(self):
+        with io.BytesIO() as f:
+            self._driver.kickout(f)
+            self._send_job(f.getvalue())
+```
