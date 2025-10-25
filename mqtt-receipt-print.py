@@ -208,9 +208,11 @@ class ReceiptPrinter:
 
             while not self.connected:
                 try:
+                    log.debug("Trying to connect...")
                     self.mqttc.reconnect()
                     self.connected = True
                 except ConnectionRefusedError:
+                    log.debug("Connection refused, waiting...")
                     time.sleep(1)
 
             if self.connected:
@@ -221,6 +223,8 @@ class ReceiptPrinter:
                 timeout = max(status_check_deadline - now, 0.0)
                 rc = self.mqttc.loop(timeout=timeout)
                 if rc == mqtt.MQTT_ERR_CONN_LOST:
+                    log.debug("Disconnected")
+                    self.current_status = self.status_offline
                     self.connected = False
 
 
