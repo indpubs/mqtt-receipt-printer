@@ -1,0 +1,14 @@
+[Unit]
+Description=MQTT to receipt printer
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 %h/mqtt-receipt-printer/mqtt-receipt-print.py %h/mqtt-receipt-printer/config.toml
+Restart=always
+RestartSec=5s
+WatchdogSec=15s
+
+[Install]
+WantedBy=default.target
